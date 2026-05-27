@@ -10,12 +10,13 @@ Run:
     python app.py
 """
 import os
-import psycopg2
+import sqlite3
+from datetime import datetime
 from flask import (
     Flask, render_template, request, session,
     redirect, url_for, flash, send_from_directory,
 )
-from config import DB_CONFIG, UPLOAD_FOLDER
+from config import DB_PATH, UPLOAD_FOLDER
 
 app = Flask(__name__)
 
@@ -33,17 +34,29 @@ app.secret_key = "secret123"
 # Secure=False   → cookie sent over plain HTTP (eavesdropping possible).
 # ─────────────────────────────────────────────────────────────────────────────
 app.config['SESSION_COOKIE_HTTPONLY'] = False
-app.config['SESSION_COOKIE_SECURE'] = False
+app.config['SESSION_COOKIE_SECURE']   = False
 app.config['SESSION_COOKIE_SAMESITE'] = None
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['UPLOAD_FOLDER']      = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
 
 
 # ── Database helper ──────────────────────────────────────────────────────────
 
 def get_db():
-    return psycopg2.connect(**DB_CONFIG)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def parse_dt(value):
+    """Convert SQLite datetime string to Python datetime."""
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -79,7 +92,7 @@ def register():
             conn.commit()
             flash('Registration successful! Please log in.', 'success')
             return redirect(url_for('login'))
-        except psycopg2.errors.UniqueViolation:
+        except sqlite3.IntegrityError:
             conn.rollback()
             flash('Username or email already taken.', 'error')
         except Exception as e:
@@ -145,13 +158,14 @@ def dashboard():
     cur  = conn.cursor()
     cur.execute(
         "SELECT id, title, mood, created_at FROM notes "
-        "WHERE user_id = %s ORDER BY created_at DESC",
+        "WHERE user_id = ? ORDER BY created_at DESC",
         (session['user_id'],),
     )
-    notes = cur.fetchall()
+    rows  = cur.fetchall()
     cur.close()
     conn.close()
 
+    notes = [(r[0], r[1], r[2], parse_dt(r[3])) for r in rows]
     return render_template('dashboard.html', notes=notes)
 
 
@@ -164,6 +178,7 @@ def create_note():
         title   = request.form.get('title', '').strip()
         content = request.form.get('content', '')
         mood    = request.form.get('mood', 'neutral')
+        now     = datetime.now().isoformat(timespec='seconds')
 
         conn = get_db()
         cur  = conn.cursor()
@@ -174,11 +189,10 @@ def create_note():
             # ─────────────────────────────────────────────────────────────────
             query = (
                 f"INSERT INTO notes (user_id, title, content, mood, created_at) "
-                f"VALUES ({session['user_id']}, '{title}', '{content}', '{mood}', NOW()) "
-                f"RETURNING id"
+                f"VALUES ({session['user_id']}, '{title}', '{content}', '{mood}', '{now}')"
             )
             cur.execute(query)
-            note_id = cur.fetchone()[0]
+            note_id = cur.lastrowid
             conn.commit()
             flash('Entry created!', 'success')
             return redirect(url_for('view_note', note_id=note_id))
@@ -205,17 +219,18 @@ def view_note(note_id):
     # There is no check that note_id belongs to session['user_id'].
     # ─────────────────────────────────────────────────────────────────────────
     cur.execute(
-        "SELECT id, title, content, mood, created_at, user_id FROM notes WHERE id = %s",
+        "SELECT id, title, content, mood, created_at, user_id FROM notes WHERE id = ?",
         (note_id,),
     )
-    note = cur.fetchone()
+    row = cur.fetchone()
     cur.close()
     conn.close()
 
-    if not note:
+    if not row:
         flash('Note not found.', 'error')
         return redirect(url_for('dashboard'))
 
+    note = (row[0], row[1], row[2], row[3], parse_dt(row[4]), row[5])
     return render_template('note_view.html', note=note)
 
 
@@ -229,7 +244,7 @@ def delete_note(note_id):
     # ─────────────────────────────────────────────────────────────────────────
     # VULNERABILITY #5 (continued): IDOR — any user can delete any note
     # ─────────────────────────────────────────────────────────────────────────
-    cur.execute("DELETE FROM notes WHERE id = %s", (note_id,))
+    cur.execute("DELETE FROM notes WHERE id = ?", (note_id,))
     conn.commit()
     cur.close()
     conn.close()
@@ -252,28 +267,29 @@ def profile():
             # ─────────────────────────────────────────────────────────────────
             # VULNERABILITY #6: Unrestricted File Upload
             # No validation of MIME type or file extension.
-            # Attacker can upload .py / .php / .exe / .html files.
+            # Attacker can upload .py / .exe / .html files.
             # VULNERABILITY #6b: Path Traversal
             # Filename not sanitised — e.g. "../../app.py" overwrites source.
             # ─────────────────────────────────────────────────────────────────
-            filename = file.filename  # raw, unsanitised
+            filename  = file.filename  # raw, unsanitised
             save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(save_path)
             cur.execute(
-                "UPDATE users SET avatar = %s WHERE id = %s",
+                "UPDATE users SET avatar = ? WHERE id = ?",
                 (filename, session['user_id']),
             )
             conn.commit()
             flash('Profile picture updated!', 'success')
 
     cur.execute(
-        "SELECT id, username, email, avatar, created_at FROM users WHERE id = %s",
+        "SELECT id, username, email, avatar, created_at FROM users WHERE id = ?",
         (session['user_id'],),
     )
-    user = cur.fetchone()
+    row  = cur.fetchone()
     cur.close()
     conn.close()
 
+    user = (row[0], row[1], row[2], row[3], parse_dt(row[4]))
     return render_template('profile.html', user=user)
 
 
@@ -291,7 +307,7 @@ def admin():
     # ─────────────────────────────────────────────────────────────────────────
     # VULNERABILITY #7: Broken Access Control via forged session
     # is_admin is read from the Flask session cookie, which is signed with the
-    # weak secret key (#1).  An attacker who cracks / forges the session can set
+    # weak secret key (#1).  An attacker who forges the session can set
     # is_admin=True and gain full admin access without a real admin account.
     # ─────────────────────────────────────────────────────────────────────────
     if not session.get('is_admin'):
@@ -301,12 +317,13 @@ def admin():
     conn = get_db()
     cur  = conn.cursor()
     cur.execute("SELECT id, username, email, is_admin, created_at FROM users ORDER BY id")
-    users = cur.fetchall()
+    users = [(r[0], r[1], r[2], r[3], parse_dt(r[4])) for r in cur.fetchall()]
+
     cur.execute(
         "SELECT n.id, n.title, u.username, n.created_at "
         "FROM notes n JOIN users u ON n.user_id = u.id ORDER BY n.created_at DESC"
     )
-    all_notes = cur.fetchall()
+    all_notes = [(r[0], r[1], r[2], parse_dt(r[3])) for r in cur.fetchall()]
     cur.close()
     conn.close()
 
@@ -320,7 +337,7 @@ def delete_user(user_id):
 
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+    cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     cur.close()
     conn.close()
@@ -331,5 +348,5 @@ def delete_user(user_id):
 
 if __name__ == '__main__':
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    # VULNERABILITY: debug=True in "production" exposes interactive debugger
+    # VULNERABILITY: debug=True exposes interactive debugger
     app.run(debug=True, host='0.0.0.0', port=5000)
