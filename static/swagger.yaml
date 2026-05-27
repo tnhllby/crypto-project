@@ -1,0 +1,644 @@
+openapi: "3.0.3"
+
+info:
+  title: "Personal Diary — Security Lab API"
+  version: "1.0.0"
+  description: |
+    REST API учебной лаборатории веб-безопасности «Personal Diary».
+
+    > ⚠️ **Это уязвимая версия** — намеренно содержит уязвимости для обучения пентесту.
+    > Не использовать в production.
+
+    ---
+
+    ## Как начать работу
+
+    1. Запусти приложение: `python app.py`
+    2. Вызови **POST /api/auth/login** — браузер сохранит сессионный cookie
+    3. Все последующие запросы выполняются от твоего имени автоматически
+
+    ## Встроенные аккаунты
+
+    | Username | Password | Role  |
+    |----------|----------|-------|
+    | admin    | admin123 | Admin |
+    | alice    | alice123 | User  |
+
+    ---
+
+    ## Карта уязвимостей
+
+    | Эндпоинт | Уязвимость | Тип |
+    |----------|-----------|-----|
+    | POST /api/auth/login | SQL Injection (auth bypass) | A03 |
+    | POST /api/auth/register | SQL Injection + Plaintext password | A03 / A02 |
+    | POST /api/notes | SQL Injection в title/content | A03 |
+    | GET /api/notes/{id} | IDOR — чтение чужих заметок | A01 |
+    | DELETE /api/notes/{id} | IDOR — удаление чужих заметок | A01 |
+    | GET /api/admin/users | Broken Access Control + утечка паролей | A01 / A02 |
+
+servers:
+  - url: "http://localhost:5000"
+    description: "Локальный сервер"
+
+tags:
+  - name: auth
+    description: "Аутентификация (SQL Injection, plaintext passwords)"
+  - name: notes
+    description: "Заметки дневника (SQL Injection, IDOR)"
+  - name: admin
+    description: "Администрирование (Broken Access Control, информационная утечка)"
+
+paths:
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # AUTH
+  # ────────────────────────────────────────────────────────────────────────────
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: "Войти в аккаунт"
+      description: |
+        ### ⚠️ SQL Injection (VULNERABILITY #3) + Plaintext password (VULNERABILITY #4)
+
+        Поля `username` и `password` вставляются в SQL-запрос через f-string без экранирования:
+
+        ```sql
+        SELECT id, username, is_admin FROM users
+        WHERE username='{username}' AND password='{password}'
+        ```
+
+        **Техники атаки:**
+
+        | Техника | username | password |
+        |---------|----------|----------|
+        | Auth bypass (конкретный юзер) | `admin'--` | что угодно |
+        | Auth bypass (первый в таблице) | `' OR '1'='1'--` | что угодно |
+        | Комментарий через `#` | `admin'#` | что угодно |
+
+        После успешного входа браузер сохраняет cookie `session`.
+        Все запросы ниже автоматически его используют.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              normal_alice:
+                summary: "✅ Обычный вход (alice)"
+                value:
+                  username: "alice"
+                  password: "alice123"
+              normal_admin:
+                summary: "✅ Обычный вход (admin)"
+                value:
+                  username: "admin"
+                  password: "admin123"
+              sqli_bypass_admin:
+                summary: "💉 SQLi — вход без пароля (admin)"
+                value:
+                  username: "admin'--"
+                  password: "wrong_password"
+              sqli_or_bypass:
+                summary: "💉 SQLi — OR bypass (первый пользователь)"
+                value:
+                  username: "' OR '1'='1'--"
+                  password: "anything"
+              sqli_hash_bypass:
+                summary: "💉 SQLi — bypass через # комментарий"
+                value:
+                  username: "admin'#"
+                  password: "ignored"
+      responses:
+        '200':
+          description: "Успешный вход"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                message: "Login successful"
+                user:
+                  id: 1
+                  username: "admin"
+                  is_admin: true
+        '401':
+          description: "Неверные учётные данные"
+          content:
+            application/json:
+              example:
+                error: "Invalid username or password"
+
+  /api/auth/register:
+    post:
+      tags: [auth]
+      summary: "Зарегистрироваться"
+      description: |
+        ### ⚠️ SQL Injection (VULNERABILITY #3) + Plaintext Password (VULNERABILITY #4)
+
+        Поля вставляются в SQL без параметризации:
+
+        ```sql
+        INSERT INTO users (username, password, email)
+        VALUES ('{username}', '{password}', '{email}')
+        ```
+
+        **Атака — создание скрытого аккаунта через username:**
+
+        Введи в поле `username`:
+        ```
+        hacker', 'mypass', 'h@x.com'); --
+        ```
+
+        Итоговый SQL:
+        ```sql
+        INSERT INTO users (username, password, email)
+        VALUES ('hacker', 'mypass', 'h@x.com'); --', 'ignored', 'ignored')
+        ```
+
+        Пользователь `hacker` создаётся с паролем `mypass`,
+        независимо от того, что передано в полях `password` и `email`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            examples:
+              normal:
+                summary: "✅ Обычная регистрация"
+                value:
+                  username: "bob"
+                  password: "bob123"
+                  email: "bob@example.com"
+              sqli_hidden_user:
+                summary: "💉 SQLi — создание скрытого аккаунта"
+                value:
+                  username: "hacker', 'pass123', 'h@x.com'); --"
+                  password: "ignored_by_sqli"
+                  email: "ignored@x.com"
+      responses:
+        '201':
+          description: "Аккаунт создан"
+          content:
+            application/json:
+              example:
+                message: "Registration successful"
+        '409':
+          description: "Пользователь уже существует"
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: "Выйти из аккаунта"
+      description: "Очищает сессионный cookie."
+      responses:
+        '200':
+          description: "Выход выполнен"
+          content:
+            application/json:
+              example:
+                message: "Logged out successfully"
+
+  /api/auth/me:
+    get:
+      tags: [auth]
+      summary: "Текущий пользователь"
+      description: |
+        Возвращает данные из сессионного cookie.
+
+        Полезно для проверки результата подделки сессии (V5):
+        после изменения cookie с `is_admin=false` на `is_admin=true`
+        этот эндпоинт покажет новое значение.
+      responses:
+        '200':
+          description: "Данные текущей сессии"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+              example:
+                user_id: 2
+                username: "alice"
+                is_admin: false
+        '401':
+          description: "Не авторизован"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # NOTES
+  # ────────────────────────────────────────────────────────────────────────────
+
+  /api/notes:
+    get:
+      tags: [notes]
+      summary: "Получить свои заметки"
+      description: "Возвращает только заметки текущего пользователя (параметризованный запрос)."
+      responses:
+        '200':
+          description: "Список заметок"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NoteSummary'
+        '401':
+          description: "Не авторизован"
+
+    post:
+      tags: [notes]
+      summary: "Создать заметку"
+      description: |
+        ### ⚠️ SQL Injection (VULNERABILITY #3)
+
+        Поля `title`, `content` и `mood` вставляются в SQL-запрос напрямую:
+
+        ```sql
+        INSERT INTO notes (user_id, title, content, mood, created_at)
+        VALUES ({user_id}, '{title}', '{content}', '{mood}', '{now}')
+        ```
+
+        **Атака через поле title** — подмена значений content и mood:
+
+        Введи в `title`:
+        ```
+        test', 'INJECTED_CONTENT', 'happy', '2000-01-01
+        ```
+
+        Результат: в БД сохранится заметка с `content = INJECTED_CONTENT`,
+        `mood = happy`, `created_at = 2000-01-01` вне зависимости от
+        переданных полей `content` и `mood`.
+
+        ### ⚠️ Stored XSS (VULNERABILITY #7)
+
+        Если в `content` поместить HTML/JS, он будет исполнен браузером
+        при просмотре заметки через веб-интерфейс (`/note/<id>`).
+
+        Пример XSS-payload в `content`:
+        ```html
+        <script>alert('XSS: ' + document.cookie)</script>
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteCreate'
+            examples:
+              normal:
+                summary: "✅ Обычная заметка"
+                value:
+                  title: "Мой день"
+                  content: "Сегодня всё хорошо."
+                  mood: "happy"
+              sqli_title:
+                summary: "💉 SQLi в поле title"
+                value:
+                  title: "test', 'INJECTED!', 'happy', '2000-01-01"
+                  content: "это поле будет проигнорировано"
+                  mood: "neutral"
+              xss_content:
+                summary: "🎭 XSS в поле content"
+                value:
+                  title: "Невинная заметка"
+                  content: "<script>alert('XSS: ' + document.cookie)</script>"
+                  mood: "neutral"
+              xss_img:
+                summary: "🎭 XSS через img onerror"
+                value:
+                  title: "Тест изображения"
+                  content: "<img src=x onerror=\"document.body.style.background='red'\">"
+                  mood: "neutral"
+      responses:
+        '201':
+          description: "Заметка создана"
+          content:
+            application/json:
+              example:
+                message: "Note created"
+                note_id: 3
+        '401':
+          description: "Не авторизован"
+
+  /api/notes/{note_id}:
+    get:
+      tags: [notes]
+      summary: "Получить заметку по ID"
+      description: |
+        ### ⚠️ IDOR — Insecure Direct Object Reference (VULNERABILITY #5)
+
+        SQL-запрос **не проверяет** `user_id`:
+
+        ```sql
+        SELECT ... FROM notes WHERE id = ?
+        ```
+
+        Любой авторизованный пользователь может получить
+        содержимое любой заметки, просто перебирая `note_id`.
+
+        **Сценарий:**
+        1. Войди как `alice` → `POST /api/auth/login`
+        2. Запроси заметку `admin` → `GET /api/notes/1`
+        3. Ответ вернёт `user_id: 1` (admin) — данные чужого пользователя
+
+        > **Бонус:** в ответе возвращается поле `user_id`, что раскрывает
+        > структуру БД и помогает атакующему составить карту ресурсов.
+      parameters:
+        - name: note_id
+          in: path
+          required: true
+          description: "ID заметки"
+          schema:
+            type: integer
+            minimum: 1
+          examples:
+            note_1:
+              summary: "Заметка #1 (создана admin)"
+              value: 1
+            note_2:
+              summary: "Заметка #2"
+              value: 2
+      responses:
+        '200':
+          description: "Данные заметки (включая чужую)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteDetail'
+              example:
+                id: 1
+                title: "Секретная заметка"
+                content: "Конфиденциальная информация..."
+                mood: "neutral"
+                created_at: "2024-01-01T10:00:00"
+                user_id: 1
+        '404':
+          description: "Заметка не найдена"
+        '401':
+          description: "Не авторизован"
+
+    delete:
+      tags: [notes]
+      summary: "Удалить заметку по ID"
+      description: |
+        ### ⚠️ IDOR (VULNERABILITY #5)
+
+        Удаляет заметку **без проверки** что она принадлежит текущему пользователю.
+
+        **Сценарий:**
+        1. Войди как `alice`
+        2. Удали заметку `admin`: `DELETE /api/notes/1`
+        3. Заметка удалена, несмотря на то что Alice не является её владельцем
+      parameters:
+        - name: note_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: "Заметка удалена"
+          content:
+            application/json:
+              example:
+                message: "Note 1 deleted"
+        '404':
+          description: "Заметка не найдена"
+        '401':
+          description: "Не авторизован"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # ADMIN
+  # ────────────────────────────────────────────────────────────────────────────
+
+  /api/admin/users:
+    get:
+      tags: [admin]
+      summary: "Все пользователи (Admin)"
+      description: |
+        ### ⚠️ Broken Access Control (VULNERABILITY #7) + Plaintext passwords (VULNERABILITY #4)
+
+        Проверяет только значение `is_admin` из сессионного cookie,
+        **без верификации через базу данных**.
+
+        При слабом секретном ключе (`secret123`, VULNERABILITY #1) можно
+        подделать сессию с `is_admin=true` с помощью `flask-unsign`
+        и получить доступ к этому эндпоинту без прав администратора.
+
+        **Критическая утечка данных:** ответ содержит поле `password`
+        с паролями всех пользователей в открытом виде.
+
+        **Шаги для демо (подделка сессии):**
+        1. Войди как `alice`
+        2. Скопируй cookie `session` из браузера
+        3. В терминале: `flask-unsign --sign --cookie "{'is_admin': True, 'user_id': 2, 'username': 'alice'}" --secret "secret123"`
+        4. Вставь новый cookie в браузер (DevTools → Application → Cookies)
+        5. Выполни этот запрос — получишь список всех пользователей с паролями
+      responses:
+        '200':
+          description: "Список всех пользователей с открытыми паролями"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserAdminResponse'
+              example:
+                - id: 1
+                  username: "admin"
+                  email: "admin@diary.local"
+                  password: "admin123"
+                  is_admin: true
+                  created_at: "2024-01-01T00:00:00"
+                - id: 2
+                  username: "alice"
+                  email: "alice@diary.local"
+                  password: "alice123"
+                  is_admin: false
+                  created_at: "2024-01-01T00:00:00"
+        '403':
+          description: "Требуются права администратора"
+
+  /api/admin/users/{user_id}:
+    delete:
+      tags: [admin]
+      summary: "Удалить пользователя (Admin)"
+      description: |
+        Удаляет пользователя и все его заметки (CASCADE).
+
+        ### ⚠️ Broken Access Control (VULNERABILITY #7)
+        Та же проблема: проверяет только сессионный cookie, не БД.
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: "Пользователь удалён"
+          content:
+            application/json:
+              example:
+                message: "User 2 deleted"
+        '404':
+          description: "Пользователь не найден"
+        '403':
+          description: "Требуются права администратора"
+
+  /api/admin/notes:
+    get:
+      tags: [admin]
+      summary: "Все заметки всех пользователей (Admin)"
+      description: |
+        Возвращает полный список заметок с именами авторов.
+
+        ### ⚠️ Broken Access Control (VULNERABILITY #7)
+        Доступно через поддельную сессию.
+      responses:
+        '200':
+          description: "Все заметки"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AdminNoteResponse'
+        '403':
+          description: "Требуются права администратора"
+
+# ────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ────────────────────────────────────────────────────────────────────────────
+
+components:
+  schemas:
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: "alice"
+        password:
+          type: string
+          example: "alice123"
+
+    RegisterRequest:
+      type: object
+      required: [username, password, email]
+      properties:
+        username:
+          type: string
+          example: "newuser"
+        password:
+          type: string
+          example: "mypassword"
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+
+    LoginResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        user:
+          type: object
+          properties:
+            id:
+              type: integer
+            username:
+              type: string
+            is_admin:
+              type: boolean
+
+    CurrentUser:
+      type: object
+      properties:
+        user_id:
+          type: integer
+        username:
+          type: string
+        is_admin:
+          type: boolean
+
+    NoteSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        mood:
+          type: string
+        created_at:
+          type: string
+
+    NoteDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        content:
+          type: string
+        mood:
+          type: string
+        created_at:
+          type: string
+        user_id:
+          type: integer
+
+    NoteCreate:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          example: "Мой день"
+        content:
+          type: string
+          example: "Сегодня был хороший день."
+        mood:
+          type: string
+          enum: [happy, sad, neutral, excited, anxious, calm]
+          default: neutral
+
+    UserAdminResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        email:
+          type: string
+        password:
+          type: string
+          description: "VULNERABILITY: plaintext password exposed in API response"
+        is_admin:
+          type: boolean
+        created_at:
+          type: string
+
+    AdminNoteResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        content:
+          type: string
+        mood:
+          type: string
+        author:
+          type: string
+        created_at:
+          type: string
