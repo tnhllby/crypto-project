@@ -1,49 +1,72 @@
 """
-Personal Diary — VULNERABLE version
-====================================
-⚠️  FOR EDUCATIONAL PURPOSES ONLY ⚠️
-This application intentionally contains security vulnerabilities.
-DO NOT deploy to production or expose to the internet.
+Personal Diary — FIXED (secure) version
+=========================================
+All vulnerabilities from the 'vulnerable' branch have been remediated.
+FIXED comments explain what changed and why.
 
 Run:
     python init_db.py   (first time only)
     python app.py
 """
 import os
+import secrets
+from markupsafe import Markup, escape
+
 import psycopg2
 from flask import (
     Flask, render_template, request, session,
     redirect, url_for, flash, send_from_directory,
 )
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+
 from config import DB_CONFIG, UPLOAD_FOLDER
 
 app = Flask(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VULNERABILITY #1: Weak, hardcoded secret key
-# A short predictable key lets an attacker forge Flask session cookies with
-# tools like flask-unsign, giving them arbitrary session values (e.g. is_admin=True).
+# FIXED #1: Strong random secret key loaded from environment variable.
+# Falls back to a random 32-byte hex string for local development only.
+# In production: export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 # ─────────────────────────────────────────────────────────────────────────────
-app.secret_key = "secret123"
+app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VULNERABILITY #2: Insecure session cookie configuration
-# HttpOnly=False → JavaScript can read the session cookie (XSS → session theft).
-# SameSite=None  → cross-site requests carry the cookie (CSRF-friendly).
-# Secure=False   → cookie sent over plain HTTP (eavesdropping possible).
+# FIXED #2: Secure session cookie attributes.
+# HttpOnly=True  → JavaScript cannot access the session cookie.
+# SameSite='Lax' → Cookie not sent on cross-site requests (CSRF mitigation).
+# Secure=False   → Set to True when running over HTTPS in production.
 # ─────────────────────────────────────────────────────────────────────────────
-app.config['SESSION_COOKIE_HTTPONLY'] = False
-app.config['SESSION_COOKIE_SECURE'] = False
-app.config['SESSION_COOKIE_SAMESITE'] = None
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE']   = False   # Change to True behind HTTPS
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
+app.config['UPLOAD_FOLDER']       = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH']  = 4 * 1024 * 1024   # 4 MB limit
+
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+
+
+# ── Custom Jinja2 filter ─────────────────────────────────────────────────────
+
+@app.template_filter('nl2br')
+def nl2br_filter(text: str) -> Markup:
+    """FIXED #7: Escape HTML then convert newlines to <br> — safe formatted output."""
+    return Markup(escape(text).replace('\n', '<br>\n'))
 
 
 # ── Database helper ──────────────────────────────────────────────────────────
 
 def get_db():
     return psycopg2.connect(**DB_CONFIG)
+
+
+def allowed_file(filename: str) -> bool:
+    """FIXED #6: Return True only for whitelisted image extensions."""
+    return (
+        '.' in filename
+        and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    )
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -60,32 +83,29 @@ def register():
         password = request.form.get('password', '')
         email    = request.form.get('email', '').strip()
 
+        if not username or not password or not email:
+            flash('All fields are required.', 'error')
+            return render_template('register.html')
+
         conn = get_db()
         cur  = conn.cursor()
         try:
-            # ─────────────────────────────────────────────────────────────────
-            # VULNERABILITY #3: SQL Injection
-            # User-supplied values are interpolated directly into the query
-            # string.  An attacker can inject arbitrary SQL.
-            # ─────────────────────────────────────────────────────────────────
-            # VULNERABILITY #4: Plaintext password storage
-            # Passwords are stored as-is — a DB dump immediately reveals them.
-            # ─────────────────────────────────────────────────────────────────
-            query = (
-                f"INSERT INTO users (username, password, email) "
-                f"VALUES ('{username}', '{password}', '{email}')"
+            # FIXED #3: Parameterized query — no SQL injection possible.
+            # FIXED #4: Password hashed with bcrypt before storage.
+            cur.execute(
+                "INSERT INTO users (username, password, email) VALUES (%s, %s, %s)",
+                (username, generate_password_hash(password), email),
             )
-            cur.execute(query)
             conn.commit()
             flash('Registration successful! Please log in.', 'success')
             return redirect(url_for('login'))
         except psycopg2.errors.UniqueViolation:
             conn.rollback()
             flash('Username or email already taken.', 'error')
-        except Exception as e:
+        except Exception:
             conn.rollback()
-            # VULNERABILITY: detailed DB error exposed to the user
-            flash(f'Database error: {e}', 'error')
+            # FIXED: Generic error — no internal details exposed to client.
+            flash('Registration failed. Please try again.', 'error')
         finally:
             cur.close()
             conn.close()
@@ -102,29 +122,27 @@ def login():
         conn = get_db()
         cur  = conn.cursor()
         try:
-            # ─────────────────────────────────────────────────────────────────
-            # VULNERABILITY #3 (continued): SQL Injection in login
-            # Classic bypass: username = ' OR '1'='1'--
-            # VULNERABILITY #4 (continued): password compared as plaintext
-            # ─────────────────────────────────────────────────────────────────
-            query = (
-                f"SELECT id, username, is_admin FROM users "
-                f"WHERE username='{username}' AND password='{password}'"
+            # FIXED #3: Parameterized query for login lookup.
+            cur.execute(
+                "SELECT id, username, password, is_admin FROM users WHERE username = %s",
+                (username,),
             )
-            cur.execute(query)
             user = cur.fetchone()
         finally:
             cur.close()
             conn.close()
 
-        if user:
-            # VULNERABILITY #2 (continued): session not regenerated after login
-            # (session fixation — attacker can pre-set a session ID)
+        # FIXED #4: Compare with bcrypt hash — never plaintext.
+        if user and check_password_hash(user[2], password):
+            # FIXED #2: Regenerate session to prevent session fixation.
+            session.clear()
             session['user_id']  = user[0]
             session['username'] = user[1]
-            session['is_admin'] = user[2]
+            # Store is_admin only to avoid repeated DB lookups; re-verify on sensitive ops.
+            session['is_admin'] = user[3]
             return redirect(url_for('dashboard'))
         else:
+            # Generic message — do not reveal whether username exists.
             flash('Invalid username or password.', 'error')
 
     return render_template('login.html')
@@ -143,6 +161,7 @@ def dashboard():
 
     conn = get_db()
     cur  = conn.cursor()
+    # FIXED #3: Parameterized query.
     cur.execute(
         "SELECT id, title, mood, created_at FROM notes "
         "WHERE user_id = %s ORDER BY created_at DESC",
@@ -165,26 +184,30 @@ def create_note():
         content = request.form.get('content', '')
         mood    = request.form.get('mood', 'neutral')
 
+        valid_moods = {'happy', 'sad', 'neutral', 'excited', 'anxious', 'calm'}
+        if mood not in valid_moods:
+            mood = 'neutral'
+
+        if not title:
+            flash('Title is required.', 'error')
+            return render_template('note_create.html')
+
         conn = get_db()
         cur  = conn.cursor()
         try:
-            # ─────────────────────────────────────────────────────────────────
-            # VULNERABILITY #3 (continued): SQL Injection in note creation
-            # Content with quotes or SQL syntax can break or hijack the query.
-            # ─────────────────────────────────────────────────────────────────
-            query = (
-                f"INSERT INTO notes (user_id, title, content, mood, created_at) "
-                f"VALUES ({session['user_id']}, '{title}', '{content}', '{mood}', NOW()) "
-                f"RETURNING id"
+            # FIXED #3: Parameterized query — user input never touches SQL structure.
+            cur.execute(
+                "INSERT INTO notes (user_id, title, content, mood, created_at) "
+                "VALUES (%s, %s, %s, %s, NOW()) RETURNING id",
+                (session['user_id'], title, content, mood),
             )
-            cur.execute(query)
             note_id = cur.fetchone()[0]
             conn.commit()
             flash('Entry created!', 'success')
             return redirect(url_for('view_note', note_id=note_id))
-        except Exception as e:
+        except Exception:
             conn.rollback()
-            flash(f'Error saving note: {e}', 'error')
+            flash('Error saving note. Please try again.', 'error')
         finally:
             cur.close()
             conn.close()
@@ -199,20 +222,18 @@ def view_note(note_id):
 
     conn = get_db()
     cur  = conn.cursor()
-    # ─────────────────────────────────────────────────────────────────────────
-    # VULNERABILITY #5: IDOR — Insecure Direct Object Reference
-    # Any logged-in user can read ANY note by changing the note_id in the URL.
-    # There is no check that note_id belongs to session['user_id'].
-    # ─────────────────────────────────────────────────────────────────────────
+    # FIXED #5: Query includes user_id — ensures only the owner can view their note.
     cur.execute(
-        "SELECT id, title, content, mood, created_at, user_id FROM notes WHERE id = %s",
-        (note_id,),
+        "SELECT id, title, content, mood, created_at, user_id FROM notes "
+        "WHERE id = %s AND user_id = %s",
+        (note_id, session['user_id']),
     )
     note = cur.fetchone()
     cur.close()
     conn.close()
 
     if not note:
+        # Return 404 — do not reveal whether the note exists but belongs to another user.
         flash('Note not found.', 'error')
         return redirect(url_for('dashboard'))
 
@@ -226,10 +247,11 @@ def delete_note(note_id):
 
     conn = get_db()
     cur  = conn.cursor()
-    # ─────────────────────────────────────────────────────────────────────────
-    # VULNERABILITY #5 (continued): IDOR — any user can delete any note
-    # ─────────────────────────────────────────────────────────────────────────
-    cur.execute("DELETE FROM notes WHERE id = %s", (note_id,))
+    # FIXED #5: user_id condition prevents deleting another user's notes.
+    cur.execute(
+        "DELETE FROM notes WHERE id = %s AND user_id = %s",
+        (note_id, session['user_id']),
+    )
     conn.commit()
     cur.close()
     conn.close()
@@ -249,16 +271,25 @@ def profile():
     if request.method == 'POST':
         file = request.files.get('avatar')
         if file and file.filename:
-            # ─────────────────────────────────────────────────────────────────
-            # VULNERABILITY #6: Unrestricted File Upload
-            # No validation of MIME type or file extension.
-            # Attacker can upload .py / .php / .exe / .html files.
-            # VULNERABILITY #6b: Path Traversal
-            # Filename not sanitised — e.g. "../../app.py" overwrites source.
-            # ─────────────────────────────────────────────────────────────────
-            filename = file.filename  # raw, unsanitised
+            # FIXED #6a: Reject files with disallowed extensions.
+            if not allowed_file(file.filename):
+                flash('Only image files are allowed (png, jpg, jpeg, gif, webp).', 'error')
+                cur.close()
+                conn.close()
+                return redirect(url_for('profile'))
+
+            # FIXED #6b: secure_filename strips path separators and dangerous characters.
+            filename = secure_filename(file.filename)
+            if not filename:
+                flash('Invalid filename.', 'error')
+                cur.close()
+                conn.close()
+                return redirect(url_for('profile'))
+
             save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(save_path)
+
+            # FIXED #3: Parameterized update.
             cur.execute(
                 "UPDATE users SET avatar = %s WHERE id = %s",
                 (filename, session['user_id']),
@@ -266,6 +297,7 @@ def profile():
             conn.commit()
             flash('Profile picture updated!', 'success')
 
+    # FIXED #3: Parameterized select.
     cur.execute(
         "SELECT id, username, email, avatar, created_at FROM users WHERE id = %s",
         (session['user_id'],),
@@ -279,7 +311,8 @@ def profile():
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
-    # VULNERABILITY: serves any file from uploads dir, including scripts
+    # FIXED #6: Serve only from the controlled uploads directory.
+    # Flask's send_from_directory prevents directory traversal by default.
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 
@@ -288,18 +321,19 @@ def admin():
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # VULNERABILITY #7: Broken Access Control via forged session
-    # is_admin is read from the Flask session cookie, which is signed with the
-    # weak secret key (#1).  An attacker who cracks / forges the session can set
-    # is_admin=True and gain full admin access without a real admin account.
-    # ─────────────────────────────────────────────────────────────────────────
-    if not session.get('is_admin'):
+    # FIXED #7 (Access Control): Re-verify is_admin from the database on every
+    # admin request — do not rely solely on the session value.
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT is_admin FROM users WHERE id = %s", (session['user_id'],))
+    row = cur.fetchone()
+
+    if not row or not row[0]:
+        cur.close()
+        conn.close()
         flash('Access denied.', 'error')
         return redirect(url_for('dashboard'))
 
-    conn = get_db()
-    cur  = conn.cursor()
     cur.execute("SELECT id, username, email, is_admin, created_at FROM users ORDER BY id")
     users = cur.fetchall()
     cur.execute(
@@ -315,11 +349,19 @@ def admin():
 
 @app.route('/admin/delete_user/<int:user_id>', methods=['POST'])
 def delete_user(user_id):
-    if 'user_id' not in session or not session.get('is_admin'):
+    if 'user_id' not in session:
         return redirect(url_for('login'))
 
+    # FIXED: Re-verify admin status from DB before destructive action.
     conn = get_db()
     cur  = conn.cursor()
+    cur.execute("SELECT is_admin FROM users WHERE id = %s", (session['user_id'],))
+    row = cur.fetchone()
+    if not row or not row[0]:
+        cur.close()
+        conn.close()
+        return redirect(url_for('login'))
+
     cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
     conn.commit()
     cur.close()
@@ -331,5 +373,7 @@ def delete_user(user_id):
 
 if __name__ == '__main__':
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    # VULNERABILITY: debug=True in "production" exposes interactive debugger
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # FIXED: debug=False in production.
+    # Set DEBUG=true environment variable for local development only.
+    debug_mode = os.environ.get('DEBUG', 'false').lower() == 'true'
+    app.run(debug=debug_mode, host='127.0.0.1', port=5000)

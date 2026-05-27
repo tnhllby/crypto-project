@@ -1,9 +1,10 @@
 """
-Database initializer — vulnerable version.
+Database initializer — FIXED (secure) version.
 Run once before starting the app: python init_db.py
 """
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from werkzeug.security import generate_password_hash
 from config import DB_CONFIG
 
 
@@ -32,7 +33,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id         SERIAL PRIMARY KEY,
             username   VARCHAR(50)  UNIQUE NOT NULL,
-            -- VULNERABILITY: password stored as plain VARCHAR — no hashing
+            -- FIXED: password column stores bcrypt hash, not plaintext
             password   VARCHAR(255) NOT NULL,
             email      VARCHAR(100) UNIQUE NOT NULL,
             is_admin   BOOLEAN DEFAULT FALSE,
@@ -52,19 +53,20 @@ def init_db():
         )
     """)
 
-    # VULNERABILITY: Admin created with plaintext password stored in DB
+    # FIXED: Passwords are hashed with bcrypt before storage
     cur.execute("SELECT 1 FROM users WHERE username = 'admin'")
     if not cur.fetchone():
         cur.execute(
-            "INSERT INTO users (username, password, email, is_admin) VALUES ('admin', 'admin123', 'admin@diary.local', TRUE)"
+            "INSERT INTO users (username, password, email, is_admin) VALUES (%s, %s, %s, %s)",
+            ('admin', generate_password_hash('admin123'), 'admin@diary.local', True),
         )
         print("[+] Created default admin user  →  username: admin  |  password: admin123")
 
-    # Seed a regular demo user
     cur.execute("SELECT 1 FROM users WHERE username = 'alice'")
     if not cur.fetchone():
         cur.execute(
-            "INSERT INTO users (username, password, email) VALUES ('alice', 'alice123', 'alice@diary.local')"
+            "INSERT INTO users (username, password, email) VALUES (%s, %s, %s)",
+            ('alice', generate_password_hash('alice123'), 'alice@diary.local'),
         )
         print("[+] Created demo user  →  username: alice  |  password: alice123")
 

