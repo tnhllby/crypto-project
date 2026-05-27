@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Profile — Personal Diary{% endblock %}
+
+{% block content %}
+<h1 class="page-title">My Profile</h1>
+
+<div class="profile-layout">
+  <!-- Avatar card -->
+  <div class="card profile-avatar-card">
+    {% if user[3] %}
+      <img src="{{ url_for('uploaded_file', filename=user[3]) }}"
+           alt="Avatar" class="avatar-img" id="avatar-preview" />
+    {% else %}
+      <div class="avatar-placeholder" id="avatar-placeholder">👤</div>
+      <img id="avatar-preview" style="display:none;" class="avatar-img" alt="Preview" />
+    {% endif %}
+
+    <p class="profile-username">{{ user[1] }}</p>
+    <p class="profile-email">{{ user[2] }}</p>
+    <span class="profile-badge {{ 'badge-admin' if session.is_admin else 'badge-user' }}">
+      {{ 'Admin' if session.is_admin else 'User' }}
+    </span>
+
+    <hr class="divider" />
+
+    <form method="POST" action="{{ url_for('profile') }}" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="avatar-input">Upload Profile Picture</label>
+        <input type="file" id="avatar-input" name="avatar" accept="image/*" />
+        <!--
+          VULNERABILITY: The 'accept' attribute on the input is a client-side hint only.
+          The server does NOT validate the file type — any file type can be uploaded
+          by bypassing or removing this attribute.
+        -->
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;">
+        Update Avatar
+      </button>
+    </form>
+  </div>
+
+  <!-- Info card -->
+  <div class="card">
+    <h2 style="font-size:1.2rem;font-weight:700;margin-bottom:1.5rem;">Account Information</h2>
+
+    <div style="display:grid;gap:1rem;">
+      <div>
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">User ID</label>
+        <p style="margin-top:0.25rem;font-weight:600;">#{{ user[0] }}</p>
+      </div>
+      <div>
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Username</label>
+        <p style="margin-top:0.25rem;font-weight:600;">{{ user[1] }}</p>
+      </div>
+      <div>
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Email</label>
+        <p style="margin-top:0.25rem;">{{ user[2] }}</p>
+      </div>
+      <div>
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Member Since</label>
+        <p style="margin-top:0.25rem;">{{ user[4].strftime('%B %d, %Y') }}</p>
+      </div>
+    </div>
+
+    <hr class="divider" />
+    <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Personal Diary{% endblock %}
+
+{% set mood_emoji = {
+  'happy':   '😊',
+  'sad':     '😢',
+  'neutral': '😐',
+  'excited': '🤩',
+  'anxious': '😰',
+  'calm':    '😌'
+} %}
+
+{% block content %}
+<div class="dashboard-header">
+  <div>
+    <h1>📖 My Diary</h1>
+    <p class="page-subtitle">Hello, <strong>{{ session.username }}</strong> — {{ notes|length }} entr{{ 'y' if notes|length == 1 else 'ies' }}</p>
+  </div>
+  <a href="{{ url_for('create_note') }}" class="btn btn-primary">+ New Entry</a>
+</div>
+
+{% if notes %}
+  <div class="notes-grid">
+    {% for note in notes %}
+      {% set note_id, note_title, note_mood, note_date = note %}
+      <div class="note-card">
+        <div class="note-card-header">
+          <span class="note-title">{{ note_title }}</span>
+          <span class="mood-badge mood-{{ note_mood }}">
+            {{ mood_emoji.get(note_mood, '😐') }} {{ note_mood|capitalize }}
+          </span>
+        </div>
+        <div class="note-meta">{{ note_date.strftime('%B %d, %Y') }}</div>
+        <div class="note-actions">
+          <a href="{{ url_for('view_note', note_id=note_id) }}" class="btn btn-secondary btn-sm">View</a>
+          <form method="POST" action="{{ url_for('delete_note', note_id=note_id) }}" style="display:inline;">
+            <button type="submit" class="btn btn-danger btn-sm"
+                    data-confirm="Delete this entry permanently?"
+                    onclick="return confirm('Delete this entry permanently?')">
+              Delete
+            </button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="empty-state">
+    <div class="empty-icon">✍️</div>
+    <h2>No entries yet</h2>
+    <p>Start writing your first diary entry.</p>
+    <a href="{{ url_for('create_note') }}" class="btn btn-primary" style="margin-top:1rem;">Write First Entry</a>
+  </div>
+{% endif %}
+{% endblock %}

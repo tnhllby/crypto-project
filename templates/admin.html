@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Admin Panel — Personal Diary{% endblock %}
+
+{% block content %}
+<div class="admin-header">
+  <h1>⚙ Admin Panel</h1>
+  <p>Manage all users and diary entries.</p>
+</div>
+
+<div class="admin-tabs">
+  <button class="admin-tab active" data-target="panel-users">👥 Users ({{ users|length }})</button>
+  <button class="admin-tab" data-target="panel-notes">📝 All Notes ({{ all_notes|length }})</button>
+</div>
+
+<!-- Users panel -->
+<div id="panel-users" class="admin-panel card">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Username</th>
+        <th>Email</th>
+        <th>Role</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>#{{ u[0] }}</td>
+        <td><strong>{{ u[1] }}</strong></td>
+        <td>{{ u[2] }}</td>
+        <td>
+          {% if u[3] %}
+            <span class="tag-admin">⭐ Admin</span>
+          {% else %}
+            <span class="tag-user">User</span>
+          {% endif %}
+        </td>
+        <td>{{ u[4].strftime('%Y-%m-%d') }}</td>
+        <td>
+          {% if u[0] != session.user_id %}
+          <form method="POST" action="{{ url_for('delete_user', user_id=u[0]) }}" style="display:inline;">
+            <button type="submit" class="btn btn-danger btn-sm"
+                    onclick="return confirm('Delete user {{ u[1] }} and all their data?')">
+              Delete
+            </button>
+          </form>
+          {% else %}
+            <span style="color:var(--text-muted);font-size:0.8rem;">You</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Notes panel -->
+<div id="panel-notes" class="admin-panel card" style="display:none;">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Title</th>
+        <th>Author</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for note in all_notes %}
+      <tr>
+        <td>#{{ note[0] }}</td>
+        <td>{{ note[1] }}</td>
+        <td>{{ note[2] }}</td>
+        <td>{{ note[3].strftime('%Y-%m-%d') }}</td>
+        <td>
+          <a href="{{ url_for('view_note', note_id=note[0]) }}" class="btn btn-secondary btn-sm">View</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

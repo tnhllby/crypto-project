@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Sign In — Personal Diary{% endblock %}
+
+{% block content %}
+<div class="auth-page">
+  <div class="auth-card">
+    <h1>Welcome back</h1>
+    <p class="subtitle">Sign in to continue your diary</p>
+
+    <form method="POST" action="{{ url_for('login') }}">
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" placeholder="Enter your username" required autofocus />
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" placeholder="Enter your password" required />
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;">Sign In</button>
+    </form>
+
+    <p class="auth-footer">
+      Don't have an account? <a href="{{ url_for('register') }}">Register</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

