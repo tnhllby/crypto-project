@@ -9,10 +9,11 @@ Run:
     python app.py
 """
 import os
+import sqlite3
 import secrets
+from datetime import datetime
 from markupsafe import Markup, escape
 
-import psycopg2
 from flask import (
     Flask, render_template, request, session,
     redirect, url_for, flash, send_from_directory,
@@ -20,7 +21,7 @@ from flask import (
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
-from config import DB_CONFIG, UPLOAD_FOLDER
+from config import DB_PATH, UPLOAD_FOLDER
 
 app = Flask(__name__)
 
@@ -41,8 +42,8 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SECURE']   = False   # Change to True behind HTTPS
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-app.config['UPLOAD_FOLDER']       = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH']  = 4 * 1024 * 1024   # 4 MB limit
+app.config['UPLOAD_FOLDER']      = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024   # 4 MB limit
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
@@ -55,10 +56,12 @@ def nl2br_filter(text: str) -> Markup:
     return Markup(escape(text).replace('\n', '<br>\n'))
 
 
-# ── Database helper ──────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def get_db():
-    return psycopg2.connect(**DB_CONFIG)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 
 def allowed_file(filename: str) -> bool:
@@ -67,6 +70,16 @@ def allowed_file(filename: str) -> bool:
         '.' in filename
         and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
     )
+
+
+def parse_dt(value):
+    """Convert SQLite datetime string to Python datetime."""
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -93,13 +106,13 @@ def register():
             # FIXED #3: Parameterized query — no SQL injection possible.
             # FIXED #4: Password hashed with bcrypt before storage.
             cur.execute(
-                "INSERT INTO users (username, password, email) VALUES (%s, %s, %s)",
+                "INSERT INTO users (username, password, email) VALUES (?, ?, ?)",
                 (username, generate_password_hash(password), email),
             )
             conn.commit()
             flash('Registration successful! Please log in.', 'success')
             return redirect(url_for('login'))
-        except psycopg2.errors.UniqueViolation:
+        except sqlite3.IntegrityError:
             conn.rollback()
             flash('Username or email already taken.', 'error')
         except Exception:
@@ -124,7 +137,7 @@ def login():
         try:
             # FIXED #3: Parameterized query for login lookup.
             cur.execute(
-                "SELECT id, username, password, is_admin FROM users WHERE username = %s",
+                "SELECT id, username, password, is_admin FROM users WHERE username = ?",
                 (username,),
             )
             user = cur.fetchone()
@@ -138,7 +151,6 @@ def login():
             session.clear()
             session['user_id']  = user[0]
             session['username'] = user[1]
-            # Store is_admin only to avoid repeated DB lookups; re-verify on sensitive ops.
             session['is_admin'] = user[3]
             return redirect(url_for('dashboard'))
         else:
@@ -164,13 +176,14 @@ def dashboard():
     # FIXED #3: Parameterized query.
     cur.execute(
         "SELECT id, title, mood, created_at FROM notes "
-        "WHERE user_id = %s ORDER BY created_at DESC",
+        "WHERE user_id = ? ORDER BY created_at DESC",
         (session['user_id'],),
     )
-    notes = cur.fetchall()
+    rows  = cur.fetchall()
     cur.close()
     conn.close()
 
+    notes = [(r[0], r[1], r[2], parse_dt(r[3])) for r in rows]
     return render_template('dashboard.html', notes=notes)
 
 
@@ -192,16 +205,17 @@ def create_note():
             flash('Title is required.', 'error')
             return render_template('note_create.html')
 
+        now  = datetime.now().isoformat(timespec='seconds')
         conn = get_db()
         cur  = conn.cursor()
         try:
             # FIXED #3: Parameterized query — user input never touches SQL structure.
             cur.execute(
                 "INSERT INTO notes (user_id, title, content, mood, created_at) "
-                "VALUES (%s, %s, %s, %s, NOW()) RETURNING id",
-                (session['user_id'], title, content, mood),
+                "VALUES (?, ?, ?, ?, ?)",
+                (session['user_id'], title, content, mood, now),
             )
-            note_id = cur.fetchone()[0]
+            note_id = cur.lastrowid
             conn.commit()
             flash('Entry created!', 'success')
             return redirect(url_for('view_note', note_id=note_id))
@@ -225,18 +239,19 @@ def view_note(note_id):
     # FIXED #5: Query includes user_id — ensures only the owner can view their note.
     cur.execute(
         "SELECT id, title, content, mood, created_at, user_id FROM notes "
-        "WHERE id = %s AND user_id = %s",
+        "WHERE id = ? AND user_id = ?",
         (note_id, session['user_id']),
     )
-    note = cur.fetchone()
+    row = cur.fetchone()
     cur.close()
     conn.close()
 
-    if not note:
-        # Return 404 — do not reveal whether the note exists but belongs to another user.
+    if not row:
+        # Return 404-like — do not reveal whether note exists for another user.
         flash('Note not found.', 'error')
         return redirect(url_for('dashboard'))
 
+    note = (row[0], row[1], row[2], row[3], parse_dt(row[4]), row[5])
     return render_template('note_view.html', note=note)
 
 
@@ -249,7 +264,7 @@ def delete_note(note_id):
     cur  = conn.cursor()
     # FIXED #5: user_id condition prevents deleting another user's notes.
     cur.execute(
-        "DELETE FROM notes WHERE id = %s AND user_id = %s",
+        "DELETE FROM notes WHERE id = ? AND user_id = ?",
         (note_id, session['user_id']),
     )
     conn.commit()
@@ -286,12 +301,10 @@ def profile():
                 conn.close()
                 return redirect(url_for('profile'))
 
-            save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(save_path)
-
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
             # FIXED #3: Parameterized update.
             cur.execute(
-                "UPDATE users SET avatar = %s WHERE id = %s",
+                "UPDATE users SET avatar = ? WHERE id = ?",
                 (filename, session['user_id']),
             )
             conn.commit()
@@ -299,20 +312,20 @@ def profile():
 
     # FIXED #3: Parameterized select.
     cur.execute(
-        "SELECT id, username, email, avatar, created_at FROM users WHERE id = %s",
+        "SELECT id, username, email, avatar, created_at FROM users WHERE id = ?",
         (session['user_id'],),
     )
-    user = cur.fetchone()
+    row  = cur.fetchone()
     cur.close()
     conn.close()
 
+    user = (row[0], row[1], row[2], row[3], parse_dt(row[4]))
     return render_template('profile.html', user=user)
 
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
-    # FIXED #6: Serve only from the controlled uploads directory.
-    # Flask's send_from_directory prevents directory traversal by default.
+    # FIXED #6: send_from_directory prevents directory traversal.
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 
@@ -325,7 +338,7 @@ def admin():
     # admin request — do not rely solely on the session value.
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute("SELECT is_admin FROM users WHERE id = %s", (session['user_id'],))
+    cur.execute("SELECT is_admin FROM users WHERE id = ?", (session['user_id'],))
     row = cur.fetchone()
 
     if not row or not row[0]:
@@ -335,12 +348,13 @@ def admin():
         return redirect(url_for('dashboard'))
 
     cur.execute("SELECT id, username, email, is_admin, created_at FROM users ORDER BY id")
-    users = cur.fetchall()
+    users = [(r[0], r[1], r[2], r[3], parse_dt(r[4])) for r in cur.fetchall()]
+
     cur.execute(
         "SELECT n.id, n.title, u.username, n.created_at "
         "FROM notes n JOIN users u ON n.user_id = u.id ORDER BY n.created_at DESC"
     )
-    all_notes = cur.fetchall()
+    all_notes = [(r[0], r[1], r[2], parse_dt(r[3])) for r in cur.fetchall()]
     cur.close()
     conn.close()
 
@@ -355,14 +369,14 @@ def delete_user(user_id):
     # FIXED: Re-verify admin status from DB before destructive action.
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute("SELECT is_admin FROM users WHERE id = %s", (session['user_id'],))
+    cur.execute("SELECT is_admin FROM users WHERE id = ?", (session['user_id'],))
     row = cur.fetchone()
     if not row or not row[0]:
         cur.close()
         conn.close()
         return redirect(url_for('login'))
 
-    cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+    cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     cur.close()
     conn.close()
@@ -374,6 +388,5 @@ def delete_user(user_id):
 if __name__ == '__main__':
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     # FIXED: debug=False in production.
-    # Set DEBUG=true environment variable for local development only.
     debug_mode = os.environ.get('DEBUG', 'false').lower() == 'true'
     app.run(debug=debug_mode, host='127.0.0.1', port=5000)
