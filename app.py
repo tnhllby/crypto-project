@@ -16,7 +16,6 @@ from flask import (
     Flask, render_template, request, session,
     redirect, url_for, flash, send_from_directory,
 )
-from flask_swagger_ui import get_swaggerui_blueprint
 from api import api as api_blueprint
 from config import DB_PATH, UPLOAD_FOLDER
 
@@ -24,21 +23,6 @@ app = Flask(__name__)
 
 # ── API Blueprint ────────────────────────────────────────────────────────────
 app.register_blueprint(api_blueprint)
-
-# ── Swagger UI ───────────────────────────────────────────────────────────────
-swaggerui_bp = get_swaggerui_blueprint(
-    '/api/docs',
-    '/static/swagger.yaml',
-    config={
-        'app_name':              'Personal Diary — Security Lab API',
-        'deepLinking':           True,
-        'displayRequestDuration': True,
-        'tryItOutEnabled':       True,
-        'defaultModelsExpandDepth': 2,
-        'defaultModelExpandDepth':  2,
-    },
-)
-app.register_blueprint(swaggerui_bp)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VULNERABILITY #1: Weak, hardcoded secret key
