@@ -3,7 +3,7 @@
 > ⚠️ **EDUCATIONAL USE ONLY** — This application is intentionally insecure.
 > Run it **only locally** on a machine you control. Never expose it to the internet.
 
-A lightweight web application built with Flask + PostgreSQL, designed for hands-on
+A lightweight web application built with Flask + SQLite, designed for hands-on
 web application security training. It ships in two branches: a **vulnerable** version
 for attack practice and a **fixed** version demonstrating secure coding patterns.
 
@@ -26,7 +26,6 @@ for attack practice and a **fixed** version demonstrating secure coding patterns
 | Requirement | Minimum version |
 |-------------|----------------|
 | Python      | 3.10+          |
-| PostgreSQL   | 14+            |
 
 ### 1. Clone and choose a branch
 
@@ -44,34 +43,13 @@ git checkout fixed
 pip install -r requirements.txt
 ```
 
-### 3. Configure the database
-
-Edit **`config.py`** to match your PostgreSQL credentials:
-
-```python
-DB_CONFIG = {
-    'host': 'localhost',
-    'database': 'diary_db',
-    'user': 'postgres',      # ← your PostgreSQL username
-    'password': 'postgres',  # ← your PostgreSQL password
-    'port': 5432,
-}
-```
-
-Alternatively, set environment variables:
-
-```bash
-export DB_USER=myuser
-export DB_PASSWORD=mypassword
-```
-
-### 4. Initialize the database
+### 3. Initialize the database
 
 ```bash
 python init_db.py
 ```
 
-This creates the `diary_db` database, sets up tables, and seeds default accounts.
+This creates the `diary.db` SQLite file, sets up tables, and seeds default accounts.
 
 **Default accounts (vulnerable branch):**
 
@@ -80,7 +58,7 @@ This creates the `diary_db` database, sets up tables, and seeds default accounts
 | admin    | admin123 | Admin |
 | alice    | alice123 | User  |
 
-### 5. Start the application
+### 4. Start the application
 
 ```bash
 python app.py
@@ -96,8 +74,8 @@ Open **http://localhost:5000** in your browser.
 |---------|--------------------|-----------------|
 | Secret key | `"secret123"` (hardcoded, weak) | Random 32-byte hex from `secrets` module |
 | Password storage | Plaintext in database | `werkzeug.security` bcrypt hashing |
-| Login query | Raw f-string (SQL injectable) | Parameterized `%s` placeholders |
-| Note queries | Raw f-string (SQL injectable) | Parameterized queries |
+| Login query | Raw f-string (SQL injectable) | Parameterized `?` placeholders |
+| Note queries | Raw f-string (SQL injectable) | Parameterized `?` placeholders |
 | File upload | No type/name validation | Extension whitelist + `secure_filename` |
 | Note ownership | No check (IDOR) | `user_id` verified before access |
 | Admin check | From session cookie only | Re-verified against database |
@@ -127,14 +105,16 @@ Documented at a high level — see `ATTACK_OVERVIEW.md` for details.
 
 ```
 crypto-project/
-├── app.py            Main Flask application
-├── init_db.py        Database setup script (run once)
-├── config.py         Database connection settings
-├── requirements.txt  Python dependencies
+├── app.py                Main Flask application
+├── api.py                REST API Blueprint (JSON endpoints)
+├── init_db.py            Database setup script (run once)
+├── config.py             App configuration (paths)
+├── requirements.txt      Python dependencies
+├── diary.db              SQLite database (created by init_db.py)
 ├── static/
 │   ├── css/style.css
 │   ├── js/main.js
-│   └── uploads/      Uploaded avatars
+│   └── uploads/          Uploaded avatars
 ├── templates/
 │   ├── base.html
 │   ├── index.html
@@ -146,7 +126,8 @@ crypto-project/
 │   ├── profile.html
 │   └── admin.html
 ├── README.md
-└── ATTACK_OVERVIEW.md
+├── ATTACK_OVERVIEW.md
+└── PENTEST_LAB_GUIDE.md  Step-by-step exploitation guide
 ```
 
 ---
