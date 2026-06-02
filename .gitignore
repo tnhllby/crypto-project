@@ -10,3 +10,4 @@ venv/
 env/
 static/uploads/*
 !static/uploads/.gitkeep
+diary.db
